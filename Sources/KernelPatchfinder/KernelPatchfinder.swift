@@ -750,13 +750,38 @@ open class KernelPatchfinder {
     }()
 
     /// Return patchfinder for the currently running kernel.
-    public static var running: Self? {
+    public static var running: KernelPatchfinder? = {
         if let krnl = MachO.runningKernel {
-            return Self(kernel: krnl)
+            return KernelPatchfinder(kernel: krnl)
         }
         
-        return nil
-    }
+        // Try libgrabkernel (if available)
+        typealias grabKernelType = @convention(c) (_ path: UnsafePointer<CChar>?, _ isResearchDevice: Int32) -> Int32
+        guard let grabKernelRaw = dlsym(dlopen(nil, 0), "grabkernel") else {
+            return nil
+        }
+        
+        let grabkernel = unsafeBitCast(grabKernelRaw, to: grabKernelType.self)
+        
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        let kernel = documents + "/kernel.img4"
+        if !FileManager.default.fileExists(atPath: kernel) {
+            let status = grabkernel(kernel, 0)
+            guard status == 0 else {
+                return nil
+            }
+        }
+        
+        guard let k = loadImg4Kernel(path: kernel) else {
+            return nil
+        }
+        
+        guard let machO = try? MachO(fromData: k, okToLoadFAT: false) else {
+            return nil
+        }
+        
+        return KernelPatchfinder(kernel: machO)
+    }()
     
     /// Initialize patchfinder for the given kernel.
     public required init?(kernel: MachO) {
